@@ -543,12 +543,231 @@ impl Cx {
                     //self.os.keyboard_visible = false;
                     //unsafe {android_jni::to_java_show_keyboard(false);}
                 }
+                CxOsOp::CopyToClipboard(text) => {
+                    // Store clipboard content locally for paste operations
+                    self.os.media.clipboard_content = Some(text.clone());
+
+                    // Call JavaScript to copy to system clipboard
+                    let text_ptr = text.as_ptr();
+                    let text_len = text.len();
+
+                    unsafe {
+                        let mut napi_text = std::ptr::null_mut();
+                        let env = self.os.arkts_obj.as_ref().unwrap().raw();
+                        let status = napi_ohos::sys::napi_create_string_utf8(
+                            env,
+                            text_ptr,
+                            text_len,
+                            &mut napi_text,
+                        );
+                        if status == napi_ohos::sys::Status::napi_ok {
+                            let args = [napi_text];
+                            let _ = self.os.arkts_obj.as_mut().unwrap().call_js_function(
+                                "copyToClipboard",
+                                1,
+                                args.as_ptr() as *const _,
+                            );
+                        }
+                    }
+                }
+                CxOsOp::ShowClipboardActions { .. } => {
+                    // TODO: Implement native clipboard actions menu for HarmonyOS
+                    crate::log!("ShowClipboardActions not fully implemented on HarmonyOS");
+                }
+                CxOsOp::HideClipboardActions => {
+                    // TODO: Hide clipboard actions menu
+                }
+                CxOsOp::CheckPermission { permission, request_id } => {
+                    // Check permission status for HarmonyOS
+                    self.ohos_check_permission(permission, request_id);
+                }
+                CxOsOp::RequestPermission { permission, request_id } => {
+                    // Request permission from user
+                    self.ohos_request_permission(permission, request_id);
+                }
                 e=>{
                     crate::error!("Not implemented on this platform: CxOsOp::{:?}", e);
                 }
             }
         }
         EventFlow::Poll
+    }
+
+    fn ohos_check_permission(&mut self, permission: crate::permission::Permission, request_id: i32) {
+        use crate::permission::{Permission, PermissionStatus, PermissionResult};
+        use crate::event::Event;
+
+        // For HarmonyOS, we check the permission status
+        // Currently, most permissions are granted at install time through module.json5
+        let status = match permission {
+            Permission::AudioInput => PermissionStatus::Granted, // Assume granted if declared in module.json5
+        };
+
+        let result = PermissionResult {
+            permission,
+            request_id,
+            status,
+        };
+
+        self.call_event_handler(&Event::PermissionResult(result));
+    }
+
+    fn ohos_request_permission(&mut self, permission: crate::permission::Permission, request_id: i32) {
+        use crate::permission::{Permission, PermissionStatus, PermissionResult};
+        use crate::event::Event;
+
+        // For HarmonyOS, permissions are typically granted at install time
+        // But we can still show the permission request UI if needed
+        let status = match permission {
+            Permission::AudioInput => {
+                // Call JavaScript to request microphone permission
+                let args = [self.create_napi_number(request_id as f64)];
+                let _ = self.os.arkts_obj.as_mut().unwrap().call_js_function(
+                    "requestMicrophonePermission",
+                    1,
+                    args.as_ptr() as *const _,
+                );
+                PermissionStatus::NotDetermined
+            }
+        };
+
+        let result = PermissionResult {
+            permission,
+            request_id,
+            status,
+        };
+
+        self.call_event_handler(&Event::PermissionResult(result));
+    }
+
+    pub fn create_napi_number(&self, value: f64) -> napi_ohos::sys::napi_value {
+        use napi_ohos::sys::*;
+        let mut result = std::ptr::null_mut();
+        unsafe {
+            napi_create_double(self.os.arkts_obj.as_ref().unwrap().raw(), value, &mut result);
+        }
+        result
+    }
+
+    pub fn create_napi_buffer<T>(&self, data: &[T]) -> napi_ohos::sys::napi_value {
+        use napi_ohos::sys::*;
+        let mut result = std::ptr::null_mut();
+        unsafe {
+            let byte_len = data.len() * std::mem::size_of::<T>();
+            napi_create_external_arraybuffer(
+                self.os.arkts_obj.as_ref().unwrap().raw(),
+                data.as_ptr() as *mut _,
+                byte_len,
+                None,
+                std::ptr::null_mut(),
+                &mut result,
+            );
+        }
+        result
+    }
+
+    pub fn ohos_show_notification(&mut self, title: &str, content: &str) {
+        // Create NAPI strings for title and content
+        let title_ptr = title.as_ptr();
+        let title_len = title.len();
+        let content_ptr = content.as_ptr();
+        let content_len = content.len();
+
+        unsafe {
+            let env = self.os.arkts_obj.as_ref().unwrap().raw();
+            let mut napi_title = std::ptr::null_mut();
+            let mut napi_content = std::ptr::null_mut();
+
+            let status1 = napi_ohos::sys::napi_create_string_utf8(
+                env,
+                title_ptr,
+                title_len,
+                &mut napi_title,
+            );
+            let status2 = napi_ohos::sys::napi_create_string_utf8(
+                env,
+                content_ptr,
+                content_len,
+                &mut napi_content,
+            );
+
+            if status1 == napi_ohos::sys::Status::napi_ok && status2 == napi_ohos::sys::Status::napi_ok {
+                let args = [napi_title, napi_content];
+                let _ = self.os.arkts_obj.as_mut().unwrap().call_js_function(
+                    "showNotification",
+                    2,
+                    args.as_ptr() as *const _,
+                );
+            }
+        }
+    }
+
+    pub fn ohos_start_network_monitoring(&mut self) {
+        let _ = self.os.arkts_obj.as_mut().unwrap().call_js_function(
+            "startNetworkMonitoring",
+            0,
+            std::ptr::null(),
+        );
+    }
+
+    pub fn ohos_stop_network_monitoring(&mut self) {
+        let _ = self.os.arkts_obj.as_mut().unwrap().call_js_function(
+            "stopNetworkMonitoring",
+            0,
+            std::ptr::null(),
+        );
+    }
+
+    pub fn ohos_show_file_picker(&mut self, title: &str, _extensions: &[&str]) {
+        let title_ptr = title.as_ptr();
+        let title_len = title.len();
+
+        unsafe {
+            let env = self.os.arkts_obj.as_ref().unwrap().raw();
+            let mut napi_title = std::ptr::null_mut();
+
+            let status = napi_ohos::sys::napi_create_string_utf8(
+                env,
+                title_ptr,
+                title_len,
+                &mut napi_title,
+            );
+
+            if status == napi_ohos::sys::Status::napi_ok {
+                let args = [napi_title];
+                let _ = self.os.arkts_obj.as_mut().unwrap().call_js_function(
+                    "showFilePicker",
+                    1,
+                    args.as_ptr() as *const _,
+                );
+            }
+        }
+    }
+
+    pub fn ohos_show_file_saver(&mut self, default_name: &str) {
+        let name_ptr = default_name.as_ptr();
+        let name_len = default_name.len();
+
+        unsafe {
+            let env = self.os.arkts_obj.as_ref().unwrap().raw();
+            let mut napi_name = std::ptr::null_mut();
+
+            let status = napi_ohos::sys::napi_create_string_utf8(
+                env,
+                name_ptr,
+                name_len,
+                &mut napi_name,
+            );
+
+            if status == napi_ohos::sys::Status::napi_ok {
+                let args = [napi_name];
+                let _ = self.os.arkts_obj.as_mut().unwrap().call_js_function(
+                    "showFileSaver",
+                    1,
+                    args.as_ptr() as *const _,
+                );
+            }
+        }
     }
 }
 
